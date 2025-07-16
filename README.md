@@ -1,6 +1,6 @@
 # 📊 Impact Bonds Contract
 
-> 🎯 **A Clarity smart contract demonstrating outcome-based financing through Social Impact Bonds**
+🎯 **A Clarity smart contract demonstrating outcome-based financing through Social Impact Bonds**
 
 ## 🌟 Overview
 
