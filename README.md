@@ -9,6 +9,7 @@ This smart contract implements a Social Impact Bond system where investors provi
 ## 🚀 Key Features
 
 - 💰 **Bond Creation**: Issuers can create bonds with specific funding targets and outcome goals
+- 🎯 **Multi-Milestone System**: Progressive tracking with intermediate payouts reducing investor risk
 - 🤝 **Investment Management**: Investors can fund bonds and track their contributions  
 - 📈 **Outcome Reporting**: Transparent reporting of actual vs. target outcomes
 - 💸 **Payout Calculation**: Automatic calculation of returns based on outcome success rates
@@ -71,7 +72,28 @@ clarinet deploy
   u85)        ;; Actual outcome achieved
 ```
 
-### Claim Payout
+### Create Milestone
+```clarity
+(contract-call? .impact-bonds-contract create-milestone 
+  u1          ;; Bond ID
+  u25         ;; Target outcome for this milestone
+  u30         ;; Payout percentage (30% of investment)
+  u720)       ;; Deadline in blocks (~5 days)
+```
+
+### Report Milestone Outcome
+```clarity
+(contract-call? .impact-bonds-contract report-milestone-outcome 
+  u1          ;; Milestone ID
+  u28)        ;; Actual outcome achieved
+```
+
+### Claim Milestone Payout
+```clarity
+(contract-call? .impact-bonds-contract claim-milestone-payout u1)
+```
+
+### Claim Final Payout
 ```clarity
 (contract-call? .impact-bonds-contract claim-payout u1)
 ```
@@ -98,19 +120,38 @@ clarinet deploy
 (contract-call? .impact-bonds-contract get-bond-status u1)
 ```
 
+### View Milestone Details
+```clarity
+(contract-call? .impact-bonds-contract get-milestone u1)
+```
+
+### Check Milestone Progress
+```clarity
+(contract-call? .impact-bonds-contract get-milestone-progress u1)
+```
+
+### Calculate Milestone Payout
+```clarity
+(contract-call? .impact-bonds-contract calculate-milestone-payout u1 'SP1HTBVD3S...)
+```
+
 ## 🎯 Example Scenarios
 
-### 🏥 Healthcare Impact Bond
+### 🏥 Healthcare Impact Bond with Milestones
 - **Target**: Reduce hospital readmissions by 20%
 - **Funding**: $500k from impact investors
-- **Outcome**: 18% reduction achieved
-- **Payout**: 90% of maximum return (135% of investment)
+- **Milestone 1**: 5% reduction in month 3 → 25% payout earned
+- **Milestone 2**: 10% reduction in month 6 → 35% payout earned  
+- **Final Outcome**: 18% reduction achieved → 90% final payout
+- **Total Return**: 150% of investment through progressive payouts
 
-### 🎓 Education Impact Bond  
+### 🎓 Education Impact Bond with Progressive Rewards
 - **Target**: Improve graduation rates by 15%
 - **Funding**: $1M from foundations
-- **Outcome**: 16% improvement achieved  
-- **Payout**: 106% of maximum return (159% of investment)
+- **Milestone 1**: 5% improvement in semester 1 → 20% payout
+- **Milestone 2**: 10% improvement in semester 2 → 30% payout
+- **Final Outcome**: 16% improvement achieved → 106% final return
+- **Total Return**: 156% through milestone + final payouts
 
 ## ⚡ Error Codes
 

@@ -12,6 +12,7 @@
 
 (define-data-var next-bond-id uint u1)
 (define-data-var contract-treasury uint u0)
+(define-data-var next-milestone-id uint u1)
 
 (define-map bonds uint {
   issuer: principal,
@@ -34,6 +35,23 @@
 
 (define-map bond-investors uint (list 200 principal))
 
+(define-map milestones uint {
+  bond-id: uint,
+  target-outcome: uint,
+  actual-outcome: uint,
+  payout-percentage: uint,
+  deadline-block: uint,
+  completed: bool,
+  reported: bool
+})
+
+(define-map bond-milestones uint (list 10 uint))
+
+(define-map milestone-claims { milestone-id: uint, investor: principal } {
+  amount: uint,
+  claimed: bool
+})
+
 (define-read-only (get-bond (bond-id uint))
   (map-get? bonds bond-id)
 )
@@ -52,6 +70,18 @@
 
 (define-read-only (get-next-bond-id)
   (var-get next-bond-id)
+)
+
+(define-read-only (get-milestone (milestone-id uint))
+  (map-get? milestones milestone-id)
+)
+
+(define-read-only (get-bond-milestones (bond-id uint))
+  (default-to (list) (map-get? bond-milestones bond-id))
+)
+
+(define-read-only (get-milestone-claim (milestone-id uint) (investor principal))
+  (map-get? milestone-claims { milestone-id: milestone-id, investor: investor })
 )
 
 (define-read-only (calculate-payout (bond-id uint) (investor principal))
@@ -104,6 +134,7 @@
     })
     
     (map-set bond-investors bond-id (list))
+    (map-set bond-milestones bond-id (list))
     (var-set next-bond-id (+ bond-id u1))
     (ok bond-id)
   )
@@ -137,6 +168,92 @@
     
     (var-set contract-treasury (+ (var-get contract-treasury) amount))
     (ok true)
+  )
+)
+
+(define-public (create-milestone 
+  (bond-id uint) 
+  (target-outcome uint) 
+  (payout-percentage uint) 
+  (deadline-blocks uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+    (milestone-id (var-get next-milestone-id))
+    (deadline-block (+ stacks-block-height deadline-blocks))
+    (current-milestones (get-bond-milestones bond-id))
+  )
+    (asserts! (is-eq tx-sender (get issuer bond)) ERR_UNAUTHORIZED)
+    (asserts! (> target-outcome u0) ERR_INVALID_OUTCOME)
+    (asserts! (and (> payout-percentage u0) (<= payout-percentage u100)) ERR_INVALID_OUTCOME)
+    
+    (map-set milestones milestone-id {
+      bond-id: bond-id,
+      target-outcome: target-outcome,
+      actual-outcome: u0,
+      payout-percentage: payout-percentage,
+      deadline-block: deadline-block,
+      completed: false,
+      reported: false
+    })
+    
+    (map-set bond-milestones bond-id 
+      (unwrap! (as-max-len? (append current-milestones milestone-id) u10) ERR_INVALID_AMOUNT)
+    )
+    
+    (var-set next-milestone-id (+ milestone-id u1))
+    (ok milestone-id)
+  )
+)
+
+(define-public (report-milestone-outcome (milestone-id uint) (actual-outcome uint))
+  (let (
+    (milestone (unwrap! (get-milestone milestone-id) ERR_BOND_NOT_FOUND))
+    (bond (unwrap! (get-bond (get bond-id milestone)) ERR_BOND_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender (get issuer bond)) ERR_UNAUTHORIZED)
+    (asserts! (>= stacks-block-height (get deadline-block milestone)) ERR_BOND_NOT_MATURE)
+    (asserts! (not (get reported milestone)) ERR_OUTCOME_ALREADY_REPORTED)
+    
+    (let (
+      (success (>= actual-outcome (get target-outcome milestone)))
+    )
+      (map-set milestones milestone-id
+        (merge milestone {
+          actual-outcome: actual-outcome,
+          completed: success,
+          reported: true
+        })
+      )
+      (ok success)
+    )
+  )
+)
+
+(define-public (claim-milestone-payout (milestone-id uint))
+  (let (
+    (milestone (unwrap! (get-milestone milestone-id) ERR_BOND_NOT_FOUND))
+    (bond (unwrap! (get-bond (get bond-id milestone)) ERR_BOND_NOT_FOUND))
+    (investment (unwrap! (get-investment (get bond-id milestone) tx-sender) ERR_NOT_INVESTOR))
+    (existing-claim (get-milestone-claim milestone-id tx-sender))
+  )
+    (asserts! (get reported milestone) ERR_OUTCOME_ALREADY_REPORTED)
+    (asserts! (get completed milestone) ERR_BOND_CLOSED)
+    (asserts! (is-none existing-claim) ERR_ALREADY_INVESTED)
+    
+    (let (
+      (payout-amount (/ (* (get amount investment) (get payout-percentage milestone)) u100))
+    )
+      (asserts! (>= (var-get contract-treasury) payout-amount) ERR_INSUFFICIENT_FUNDS)
+      
+      (map-set milestone-claims 
+        { milestone-id: milestone-id, investor: tx-sender }
+        { amount: payout-amount, claimed: true }
+      )
+      
+      (var-set contract-treasury (- (var-get contract-treasury) payout-amount))
+      (try! (as-contract (stx-transfer? payout-amount tx-sender tx-sender)))
+      (ok payout-amount)
+    )
   )
 )
 
@@ -258,6 +375,52 @@
         potential-payout: (unwrap! payout ERR_BOND_NOT_FOUND)
       })
       (ok { invested: u0, claimed: false, potential-payout: u0 })
+    )
+  )
+)
+
+(define-read-only (get-milestone-progress (bond-id uint))
+  (let (
+    (milestone-ids (get-bond-milestones bond-id))
+  )
+    (ok {
+      total-milestones: (len milestone-ids),
+      completed-milestones: (fold count-completed-milestones milestone-ids u0),
+      reported-milestones: (fold count-reported-milestones milestone-ids u0)
+    })
+  )
+)
+
+(define-private (count-completed-milestones (milestone-id uint) (acc uint))
+  (let (
+    (milestone (get-milestone milestone-id))
+  )
+    (if (and (is-some milestone) (get completed (unwrap-panic milestone)))
+      (+ acc u1)
+      acc
+    )
+  )
+)
+
+(define-private (count-reported-milestones (milestone-id uint) (acc uint))
+  (let (
+    (milestone (get-milestone milestone-id))
+  )
+    (if (and (is-some milestone) (get reported (unwrap-panic milestone)))
+      (+ acc u1)
+      acc
+    )
+  )
+)
+
+(define-read-only (calculate-milestone-payout (milestone-id uint) (investor principal))
+  (let (
+    (milestone (unwrap! (get-milestone milestone-id) ERR_BOND_NOT_FOUND))
+    (investment (unwrap! (get-investment (get bond-id milestone) investor) ERR_NOT_INVESTOR))
+  )
+    (if (and (get reported milestone) (get completed milestone))
+      (ok (/ (* (get amount investment) (get payout-percentage milestone)) u100))
+      (ok u0)
     )
   )
 )
