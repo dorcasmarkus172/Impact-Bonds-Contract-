@@ -9,6 +9,9 @@
 (define-constant ERR_OUTCOME_ALREADY_REPORTED (err u8))
 (define-constant ERR_BOND_NOT_MATURE (err u9))
 (define-constant ERR_INVALID_OUTCOME (err u10))
+(define-constant ERR_FUNDING_PERIOD_EXPIRED (err u11))
+(define-constant ERR_REFUND_NOT_AVAILABLE (err u12))
+(define-constant ERR_ALREADY_REFUNDED (err u13))
 
 (define-data-var next-bond-id uint u1)
 (define-data-var contract-treasury uint u0)
@@ -22,15 +25,19 @@
   actual-outcome: uint,
   outcome-reported: bool,
   maturity-block: uint,
+  funding-deadline: uint,
   success-rate: uint,
   payout-rate: uint,
   is-active: bool,
+  funding-complete: bool,
+  refund-available: bool,
   created-at: uint
 })
 
 (define-map investments { bond-id: uint, investor: principal } {
   amount: uint,
-  claimed: bool
+  claimed: bool,
+  refunded: bool
 })
 
 (define-map bond-investors uint (list 200 principal))
@@ -109,11 +116,13 @@
 (define-public (create-bond 
   (target-amount uint) 
   (target-outcome uint) 
-  (maturity-blocks uint) 
+  (maturity-blocks uint)
+  (funding-blocks uint)
   (payout-rate uint))
   (let (
     (bond-id (var-get next-bond-id))
     (maturity-block (+ stacks-block-height maturity-blocks))
+    (funding-deadline (+ stacks-block-height funding-blocks))
   )
     (asserts! (> target-amount u0) ERR_INVALID_AMOUNT)
     (asserts! (> target-outcome u0) ERR_INVALID_OUTCOME)
@@ -127,9 +136,12 @@
       actual-outcome: u0,
       outcome-reported: false,
       maturity-block: maturity-block,
+      funding-deadline: funding-deadline,
       success-rate: u0,
       payout-rate: payout-rate,
       is-active: true,
+      funding-complete: false,
+      refund-available: false,
       created-at: stacks-block-height
     })
     
@@ -147,6 +159,7 @@
     (current-investors (get-bond-investors bond-id))
   )
     (asserts! (get is-active bond) ERR_BOND_CLOSED)
+    (asserts! (< stacks-block-height (get funding-deadline bond)) ERR_FUNDING_PERIOD_EXPIRED)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (is-none existing-investment) ERR_ALREADY_INVESTED)
     (asserts! (<= (+ (get raised-amount bond) amount) (get target-amount bond)) ERR_INVALID_AMOUNT)
@@ -155,7 +168,7 @@
     
     (map-set investments 
       { bond-id: bond-id, investor: tx-sender }
-      { amount: amount, claimed: false }
+      { amount: amount, claimed: false, refunded: false }
     )
     
     (map-set bonds bond-id
@@ -303,6 +316,68 @@
   )
 )
 
+(define-public (finalize-funding (bond-id uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender (get issuer bond)) ERR_UNAUTHORIZED)
+    (asserts! (>= stacks-block-height (get funding-deadline bond)) ERR_BOND_NOT_MATURE)
+    
+    (let (
+      (funding-successful (>= (get raised-amount bond) (get target-amount bond)))
+    )
+      (map-set bonds bond-id
+        (merge bond {
+          funding-complete: funding-successful,
+          refund-available: (not funding-successful)
+        })
+      )
+      (ok funding-successful)
+    )
+  )
+)
+
+(define-public (claim-refund (bond-id uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+    (investment (unwrap! (get-investment bond-id tx-sender) ERR_NOT_INVESTOR))
+  )
+    (asserts! (>= stacks-block-height (get funding-deadline bond)) ERR_BOND_NOT_MATURE)
+    (asserts! (get refund-available bond) ERR_REFUND_NOT_AVAILABLE)
+    (asserts! (not (get refunded investment)) ERR_ALREADY_REFUNDED)
+    (asserts! (not (get claimed investment)) ERR_ALREADY_INVESTED)
+    
+    (let (
+      (refund-amount (get amount investment))
+    )
+      (asserts! (>= (var-get contract-treasury) refund-amount) ERR_INSUFFICIENT_FUNDS)
+      
+      (map-set investments 
+        { bond-id: bond-id, investor: tx-sender }
+        (merge investment { refunded: true })
+      )
+      
+      (var-set contract-treasury (- (var-get contract-treasury) refund-amount))
+      (try! (as-contract (stx-transfer? refund-amount tx-sender tx-sender)))
+      (ok refund-amount)
+    )
+  )
+)
+
+(define-public (check-and-finalize-funding (bond-id uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+  )
+    (if (and 
+          (>= stacks-block-height (get funding-deadline bond))
+          (not (get funding-complete bond))
+          (not (get refund-available bond)))
+      (finalize-funding bond-id)
+      (ok (get funding-complete bond))
+    )
+  )
+)
+
 (define-public (close-bond (bond-id uint))
   (let (
     (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
@@ -357,8 +432,30 @@
       is-active: (get is-active bond),
       is-mature: (>= stacks-block-height (get maturity-block bond)),
       outcome-reported: (get outcome-reported bond),
-      funding-complete: (>= (get raised-amount bond) (get target-amount bond)),
+      funding-complete: (get funding-complete bond),
+      refund-available: (get refund-available bond),
+      funding-deadline-passed: (>= stacks-block-height (get funding-deadline bond)),
       success-rate: (get success-rate bond)
+    })
+  )
+)
+
+(define-read-only (get-funding-status (bond-id uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+  )
+    (ok {
+      target-amount: (get target-amount bond),
+      raised-amount: (get raised-amount bond),
+      funding-deadline: (get funding-deadline bond),
+      funding-complete: (get funding-complete bond),
+      refund-available: (get refund-available bond),
+      blocks-remaining: (if (> (get funding-deadline bond) stacks-block-height)
+        (- (get funding-deadline bond) stacks-block-height)
+        u0),
+      funding-percentage: (if (> (get target-amount bond) u0)
+        (/ (* (get raised-amount bond) u100) (get target-amount bond))
+        u0)
     })
   )
 )
@@ -367,14 +464,17 @@
   (let (
     (investment (get-investment bond-id investor))
     (payout (calculate-payout bond-id investor))
+    (bond (get-bond bond-id))
   )
     (if (is-some investment)
       (ok {
         invested: (get amount (unwrap-panic investment)),
         claimed: (get claimed (unwrap-panic investment)),
-        potential-payout: (unwrap! payout ERR_BOND_NOT_FOUND)
+        refunded: (get refunded (unwrap-panic investment)),
+        potential-payout: (unwrap! payout ERR_BOND_NOT_FOUND),
+        refund-available: (if (is-some bond) (get refund-available (unwrap-panic bond)) false)
       })
-      (ok { invested: u0, claimed: false, potential-payout: u0 })
+      (ok { invested: u0, claimed: false, refunded: false, potential-payout: u0, refund-available: false })
     )
   )
 )

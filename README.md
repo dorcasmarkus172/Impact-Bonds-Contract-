@@ -10,6 +10,7 @@ This smart contract implements a Social Impact Bond system where investors provi
 
 - 💰 **Bond Creation**: Issuers can create bonds with specific funding targets and outcome goals
 - 🎯 **Multi-Milestone System**: Progressive tracking with intermediate payouts reducing investor risk
+- 🛡️ **Automated Refund Safety**: Full refunds when bonds fail to meet funding targets by deadline
 - 🤝 **Investment Management**: Investors can fund bonds and track their contributions  
 - 📈 **Outcome Reporting**: Transparent reporting of actual vs. target outcomes
 - 💸 **Payout Calculation**: Automatic calculation of returns based on outcome success rates
@@ -55,6 +56,7 @@ clarinet deploy
   u1000000    ;; Target amount (1M microSTX)
   u100        ;; Target outcome (e.g., 100 beneficiaries served)
   u1440       ;; Maturity in blocks (~10 days)
+  u720        ;; Funding deadline in blocks (~5 days)
   u150)       ;; Payout rate (150% max return)
 ```
 
@@ -91,6 +93,16 @@ clarinet deploy
 ### Claim Milestone Payout
 ```clarity
 (contract-call? .impact-bonds-contract claim-milestone-payout u1)
+```
+
+### Finalize Funding Status
+```clarity
+(contract-call? .impact-bonds-contract finalize-funding u1)
+```
+
+### Claim Refund (If Funding Failed)
+```clarity
+(contract-call? .impact-bonds-contract claim-refund u1)
 ```
 
 ### Claim Final Payout
@@ -135,6 +147,11 @@ clarinet deploy
 (contract-call? .impact-bonds-contract calculate-milestone-payout u1 'SP1HTBVD3S...)
 ```
 
+### Check Funding Status
+```clarity
+(contract-call? .impact-bonds-contract get-funding-status u1)
+```
+
 ## 🎯 Example Scenarios
 
 ### 🏥 Healthcare Impact Bond with Milestones
@@ -167,6 +184,9 @@ clarinet deploy
 | `u8` | Outcome already reported |
 | `u9` | Bond not mature |
 | `u10` | Invalid outcome |
+| `u11` | Funding period expired |
+| `u12` | Refund not available |
+| `u13` | Already refunded |
 
 ## 🧪 Testing
 
