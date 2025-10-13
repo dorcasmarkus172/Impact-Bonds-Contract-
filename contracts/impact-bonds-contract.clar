@@ -12,10 +12,14 @@
 (define-constant ERR_FUNDING_PERIOD_EXPIRED (err u11))
 (define-constant ERR_REFUND_NOT_AVAILABLE (err u12))
 (define-constant ERR_ALREADY_REFUNDED (err u13))
+(define-constant ERR_TRANSFER_NOT_ALLOWED (err u14))
+(define-constant ERR_INVALID_RECIPIENT (err u15))
+(define-constant ERR_POSITION_LOCKED (err u16))
 
 (define-data-var next-bond-id uint u1)
 (define-data-var contract-treasury uint u0)
 (define-data-var next-milestone-id uint u1)
+(define-data-var next-transfer-id uint u1)
 
 (define-map bonds uint {
   issuer: principal,
@@ -37,10 +41,31 @@
 (define-map investments { bond-id: uint, investor: principal } {
   amount: uint,
   claimed: bool,
-  refunded: bool
+  refunded: bool,
+  transferable: bool
 })
 
 (define-map bond-investors uint (list 200 principal))
+
+(define-map transfer-offers uint {
+  bond-id: uint,
+  seller: principal,
+  amount: uint,
+  price: uint,
+  active: bool,
+  created-at: uint
+})
+
+(define-map bond-transfers uint (list 50 uint))
+
+(define-map transfer-history { transfer-id: uint } {
+  bond-id: uint,
+  from: principal,
+  to: principal,
+  amount: uint,
+  price: uint,
+  executed-at: uint
+})
 
 (define-map milestones uint {
   bond-id: uint,
@@ -89,6 +114,18 @@
 
 (define-read-only (get-milestone-claim (milestone-id uint) (investor principal))
   (map-get? milestone-claims { milestone-id: milestone-id, investor: investor })
+)
+
+(define-read-only (get-transfer-offer (transfer-id uint))
+  (map-get? transfer-offers transfer-id)
+)
+
+(define-read-only (get-bond-transfer-offers (bond-id uint))
+  (default-to (list) (map-get? bond-transfers bond-id))
+)
+
+(define-read-only (get-transfer-history (transfer-id uint))
+  (map-get? transfer-history { transfer-id: transfer-id })
 )
 
 (define-read-only (calculate-payout (bond-id uint) (investor principal))
@@ -147,6 +184,7 @@
     
     (map-set bond-investors bond-id (list))
     (map-set bond-milestones bond-id (list))
+    (map-set bond-transfers bond-id (list))
     (var-set next-bond-id (+ bond-id u1))
     (ok bond-id)
   )
@@ -168,7 +206,7 @@
     
     (map-set investments 
       { bond-id: bond-id, investor: tx-sender }
-      { amount: amount, claimed: false, refunded: false }
+      { amount: amount, claimed: false, refunded: false, transferable: true }
     )
     
     (map-set bonds bond-id
@@ -364,6 +402,128 @@
   )
 )
 
+(define-public (create-transfer-offer (bond-id uint) (amount uint) (price uint))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+    (investment (unwrap! (get-investment bond-id tx-sender) ERR_NOT_INVESTOR))
+    (transfer-id (var-get next-transfer-id))
+    (current-offers (get-bond-transfer-offers bond-id))
+  )
+    (asserts! (get transferable investment) ERR_TRANSFER_NOT_ALLOWED)
+    (asserts! (not (get claimed investment)) ERR_ALREADY_INVESTED)
+    (asserts! (not (get refunded investment)) ERR_ALREADY_REFUNDED)
+    (asserts! (<= amount (get amount investment)) ERR_INVALID_AMOUNT)
+    (asserts! (> price u0) ERR_INVALID_AMOUNT)
+    
+    (map-set transfer-offers transfer-id {
+      bond-id: bond-id,
+      seller: tx-sender,
+      amount: amount,
+      price: price,
+      active: true,
+      created-at: stacks-block-height
+    })
+    
+    (map-set bond-transfers bond-id 
+      (unwrap! (as-max-len? (append current-offers transfer-id) u50) ERR_INVALID_AMOUNT)
+    )
+    
+    (var-set next-transfer-id (+ transfer-id u1))
+    (ok transfer-id)
+  )
+)
+
+(define-public (accept-transfer-offer (transfer-id uint))
+  (let (
+    (offer (unwrap! (get-transfer-offer transfer-id) ERR_BOND_NOT_FOUND))
+    (bond (unwrap! (get-bond (get bond-id offer)) ERR_BOND_NOT_FOUND))
+    (seller-investment (unwrap! (get-investment (get bond-id offer) (get seller offer)) ERR_NOT_INVESTOR))
+    (buyer-investment (get-investment (get bond-id offer) tx-sender))
+  )
+    (asserts! (get active offer) ERR_TRANSFER_NOT_ALLOWED)
+    (asserts! (not (is-eq tx-sender (get seller offer))) ERR_INVALID_RECIPIENT)
+    (asserts! (>= (get amount seller-investment) (get amount offer)) ERR_INVALID_AMOUNT)
+    (asserts! (get funding-complete bond) ERR_BOND_CLOSED)
+    
+    (try! (stx-transfer? (get price offer) tx-sender (get seller offer)))
+    
+    (let (
+      (new-seller-amount (- (get amount seller-investment) (get amount offer)))
+    )
+      (if (> new-seller-amount u0)
+        (map-set investments 
+          { bond-id: (get bond-id offer), investor: (get seller offer) }
+          (merge seller-investment { amount: new-seller-amount })
+        )
+        (map-delete investments { bond-id: (get bond-id offer), investor: (get seller offer) })
+      )
+      
+      (if (is-some buyer-investment)
+        (let (
+          (current-buyer-investment (unwrap-panic buyer-investment))
+        )
+          (map-set investments 
+            { bond-id: (get bond-id offer), investor: tx-sender }
+            (merge current-buyer-investment { 
+              amount: (+ (get amount current-buyer-investment) (get amount offer))
+            })
+          )
+        )
+        (begin
+          (map-set investments 
+            { bond-id: (get bond-id offer), investor: tx-sender }
+            { amount: (get amount offer), claimed: false, refunded: false, transferable: true }
+          )
+          (let (
+            (current-investors (get-bond-investors (get bond-id offer)))
+          )
+            (map-set bond-investors (get bond-id offer)
+              (unwrap! (as-max-len? (append current-investors tx-sender) u200) ERR_INVALID_AMOUNT)
+            )
+          )
+        )
+      )
+      
+      (map-set transfer-offers transfer-id (merge offer { active: false }))
+      
+      (map-set transfer-history { transfer-id: transfer-id } {
+        bond-id: (get bond-id offer),
+        from: (get seller offer),
+        to: tx-sender,
+        amount: (get amount offer),
+        price: (get price offer),
+        executed-at: stacks-block-height
+      })
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (cancel-transfer-offer (transfer-id uint))
+  (let (
+    (offer (unwrap! (get-transfer-offer transfer-id) ERR_BOND_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender (get seller offer)) ERR_UNAUTHORIZED)
+    (asserts! (get active offer) ERR_TRANSFER_NOT_ALLOWED)
+    
+    (map-set transfer-offers transfer-id (merge offer { active: false }))
+    (ok true)
+  )
+)
+
+(define-public (toggle-position-transferability (bond-id uint))
+  (let (
+    (investment (unwrap! (get-investment bond-id tx-sender) ERR_NOT_INVESTOR))
+  )
+    (map-set investments 
+      { bond-id: bond-id, investor: tx-sender }
+      (merge investment { transferable: (not (get transferable investment)) })
+    )
+    (ok (not (get transferable investment)))
+  )
+)
+
 (define-public (check-and-finalize-funding (bond-id uint))
   (let (
     (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
@@ -521,6 +681,41 @@
     (if (and (get reported milestone) (get completed milestone))
       (ok (/ (* (get amount investment) (get payout-percentage milestone)) u100))
       (ok u0)
+    )
+  )
+)
+
+(define-read-only (get-active-transfer-offers (bond-id uint))
+  (let (
+    (offer-ids (get-bond-transfer-offers bond-id))
+  )
+    (ok {
+      bond-id: bond-id,
+      total-offers: (len offer-ids),
+      offer-ids: offer-ids
+    })
+  )
+)
+
+(define-read-only (get-position-transfer-status (bond-id uint) (investor principal))
+  (let (
+    (investment (get-investment bond-id investor))
+  )
+    (if (is-some investment)
+      (ok {
+        has-position: true,
+        transferable: (get transferable (unwrap-panic investment)),
+        amount: (get amount (unwrap-panic investment)),
+        claimed: (get claimed (unwrap-panic investment)),
+        refunded: (get refunded (unwrap-panic investment))
+      })
+      (ok {
+        has-position: false,
+        transferable: false,
+        amount: u0,
+        claimed: false,
+        refunded: false
+      })
     )
   )
 )

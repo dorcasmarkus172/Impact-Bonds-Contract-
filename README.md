@@ -11,6 +11,7 @@ This smart contract implements a Social Impact Bond system where investors provi
 - 💰 **Bond Creation**: Issuers can create bonds with specific funding targets and outcome goals
 - 🎯 **Multi-Milestone System**: Progressive tracking with intermediate payouts reducing investor risk
 - 🛡️ **Automated Refund Safety**: Full refunds when bonds fail to meet funding targets by deadline
+- 🔄 **Secondary Market Trading**: Transfer bond positions creating liquidity and early exit options
 - 🤝 **Investment Management**: Investors can fund bonds and track their contributions  
 - 📈 **Outcome Reporting**: Transparent reporting of actual vs. target outcomes
 - 💸 **Payout Calculation**: Automatic calculation of returns based on outcome success rates
@@ -105,6 +106,29 @@ clarinet deploy
 (contract-call? .impact-bonds-contract claim-refund u1)
 ```
 
+### Create Transfer Offer (Sell Position)
+```clarity
+(contract-call? .impact-bonds-contract create-transfer-offer 
+  u1          ;; Bond ID
+  u50000      ;; Amount to sell (50k microSTX)
+  u55000)     ;; Asking price (55k microSTX)
+```
+
+### Accept Transfer Offer (Buy Position)
+```clarity
+(contract-call? .impact-bonds-contract accept-transfer-offer u1)
+```
+
+### Cancel Transfer Offer
+```clarity
+(contract-call? .impact-bonds-contract cancel-transfer-offer u1)
+```
+
+### Toggle Position Transferability
+```clarity
+(contract-call? .impact-bonds-contract toggle-position-transferability u1)
+```
+
 ### Claim Final Payout
 ```clarity
 (contract-call? .impact-bonds-contract claim-payout u1)
@@ -152,6 +176,43 @@ clarinet deploy
 (contract-call? .impact-bonds-contract get-funding-status u1)
 ```
 
+### View Transfer Offer Details
+```clarity
+(contract-call? .impact-bonds-contract get-transfer-offer u1)
+```
+
+### Get Active Transfer Offers for Bond
+```clarity
+(contract-call? .impact-bonds-contract get-active-transfer-offers u1)
+```
+
+### Check Position Transfer Status
+```clarity
+(contract-call? .impact-bonds-contract get-position-transfer-status u1 'SP1HTBVD3S...)
+```
+
+## 🔄 Secondary Market Trading
+
+The contract features a built-in secondary market enabling position transfers:
+
+### 📊 How It Works
+1. **List Position**: Investors create transfer offers with custom pricing
+2. **Market Discovery**: Buyers browse active offers across bonds
+3. **Instant Settlement**: Automated position transfer and payment
+4. **History Tracking**: Complete audit trail of all transfers
+
+### 💡 Benefits
+- **Liquidity**: Exit positions before maturity
+- **Price Discovery**: Market-driven valuation of impact bonds
+- **Flexibility**: Partial position transfers supported
+- **Control**: Toggle transferability on/off per position
+
+### 🎯 Use Cases
+- Early exit for urgent capital needs
+- Portfolio rebalancing and diversification
+- Profit-taking on high-performing bonds
+- Risk mitigation through position reduction
+
 ## 🎯 Example Scenarios
 
 ### 🏥 Healthcare Impact Bond with Milestones
@@ -187,6 +248,9 @@ clarinet deploy
 | `u11` | Funding period expired |
 | `u12` | Refund not available |
 | `u13` | Already refunded |
+| `u14` | Transfer not allowed |
+| `u15` | Invalid recipient |
+| `u16` | Position locked |
 
 ## 🧪 Testing
 
