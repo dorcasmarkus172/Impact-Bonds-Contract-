@@ -21,6 +21,9 @@
 (define-data-var next-milestone-id uint u1)
 (define-data-var next-transfer-id uint u1)
 
+(define-data-var contract-owner principal CONTRACT_OWNER)
+(define-data-var pending-owner (optional principal) none)
+
 (define-map bonds uint {
   issuer: principal,
   target-amount: uint,
@@ -717,5 +720,34 @@
         refunded: false
       })
     )
+  )
+)
+
+(define-read-only (get-contract-owner)
+  (var-get contract-owner)
+)
+
+(define-read-only (get-pending-owner)
+  (var-get pending-owner)
+)
+
+(define-public (initiate-owner-transfer (new-owner principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq tx-sender new-owner)) ERR_INVALID_RECIPIENT)
+    (var-set pending-owner (some new-owner))
+    (ok true)
+  )
+)
+
+(define-public (accept-owner-transfer)
+  (let (
+    (pending (var-get pending-owner))
+  )
+    (asserts! (is-some pending) ERR_UNAUTHORIZED)
+    (asserts! (is-eq tx-sender (unwrap-panic pending)) ERR_UNAUTHORIZED)
+    (var-set contract-owner tx-sender)
+    (var-set pending-owner none)
+    (ok true)
   )
 )
