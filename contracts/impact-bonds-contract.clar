@@ -87,6 +87,8 @@
   claimed: bool
 })
 
+(define-map auto-claims { bond-id: uint, investor: principal } bool)
+
 (define-read-only (get-bond (bond-id uint))
   (map-get? bonds bond-id)
 )
@@ -129,6 +131,10 @@
 
 (define-read-only (get-transfer-history (transfer-id uint))
   (map-get? transfer-history { transfer-id: transfer-id })
+)
+
+(define-read-only (get-auto-claim (bond-id uint) (investor principal))
+  (default-to false (map-get? auto-claims { bond-id: bond-id, investor: investor }))
 )
 
 (define-read-only (calculate-payout (bond-id uint) (investor principal))
@@ -353,6 +359,34 @@
     
     (var-set contract-treasury (- (var-get contract-treasury) payout-amount))
     (try! (as-contract (stx-transfer? payout-amount tx-sender tx-sender)))
+    (ok payout-amount)
+  )
+)
+
+(define-public (set-auto-claim (bond-id uint) (enabled bool))
+  (let (
+    (investment (unwrap! (get-investment bond-id tx-sender) ERR_NOT_INVESTOR))
+  )
+    (map-set auto-claims { bond-id: bond-id, investor: tx-sender } enabled)
+    (ok enabled)
+  )
+)
+
+(define-public (claim-payout-for (bond-id uint) (investor principal))
+  (let (
+    (bond (unwrap! (get-bond bond-id) ERR_BOND_NOT_FOUND))
+    (investment (unwrap! (get-investment bond-id investor) ERR_NOT_INVESTOR))
+    (payout-amount (unwrap! (calculate-payout bond-id investor) ERR_BOND_NOT_FOUND))
+    (auto (default-to false (map-get? auto-claims { bond-id: bond-id, investor: investor })))
+    (authorized (or (is-eq tx-sender investor) auto))
+  )
+    (asserts! (get outcome-reported bond) ERR_OUTCOME_ALREADY_REPORTED)
+    (asserts! (not (get claimed investment)) ERR_ALREADY_INVESTED)
+    (asserts! authorized ERR_UNAUTHORIZED)
+    (asserts! (>= (var-get contract-treasury) payout-amount) ERR_INSUFFICIENT_FUNDS)
+    (map-set investments { bond-id: bond-id, investor: investor } (merge investment { claimed: true }))
+    (var-set contract-treasury (- (var-get contract-treasury) payout-amount))
+    (try! (as-contract (stx-transfer? payout-amount tx-sender investor)))
     (ok payout-amount)
   )
 )
